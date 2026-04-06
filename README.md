@@ -89,4 +89,5 @@ bear4f/emby-proxy-toolbox
 
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/admintors/emby-proxy-alpine-lite/main/install.sh | bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/admintors/emby-proxy-alpine-lite/main/install.sh && bash install.sh
+
