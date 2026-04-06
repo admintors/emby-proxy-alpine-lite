@@ -1,6 +1,6 @@
 # Emby Proxy Alpine Lite
 
-一个适用于 **Alpine Linux 小鸡 / NAT VPS / 非标准端口环境** 的轻量级 Emby / Jellyfin 反向代理一键脚本。
+一个适用于 **Alpine Linux 小鸡 / NAT VPS / 非标准端口环境** 的轻量级 Emby 反向代理一键脚本。
 
 主要面向这类场景：
 
@@ -77,6 +77,11 @@
 ## 致谢
 本项目实现思路受以下项目启发：
 bear4f/emby-proxy-toolbox
+
+---
+
+## 警告⚠️
+本代码基于原作者的代码，使用ai进行改写，本项目仅作为兴趣爱好，本人不对任何代码所负责！！
 
 ---
 
