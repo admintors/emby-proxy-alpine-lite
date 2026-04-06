@@ -67,6 +67,46 @@
 
 ---
 
+## 一键安装
+
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/admintors/emby-proxy-alpine-lite/main/install.sh && bash install.sh
+```
+---
+
+## 卸载
+本项目提供独立卸载脚本，可用于清理以下内容：
+
+- 项目生成的 Nginx 站点配置
+- 项目生成的 BasicAuth 文件
+- 项目签发并安装到 /etc/nginx/certs/ 的证书
+- acme.sh 目录与相关状态
+
+---
+
+## 关于卸载
+卸载脚本默认会：
+
+- 删除项目生成的 emby-lite-*.conf
+- 删除项目生成的 .htpasswd 文件
+- 删除 /etc/nginx/certs/ 下本项目证书
+- 删除 /root/.acme.sh
+- 尝试恢复最近一次 nginx.conf 备份
+- 重载或停止 Nginx
+
+如果你确认这台机器不再需要 Nginx，卸载脚本会额外询问是否删除 nginx 软件包。
+
+---
+
+## 一键卸载
+
+
+```bash
+curl -fsSL -o uninstall.sh https://raw.githubusercontent.com/admintors/emby-proxy-alpine-lite/main/uninstall.sh && bash uninstall.sh
+```
+---
+
 ## 免责声明
 本项目仅供合法、自用场景下的学习与部署参考。
 请勿将其用于任何违法用途、公共开放代理用途或违反服务提供商条款的场景。
@@ -74,20 +114,8 @@
 
 ---
 
-## 致谢
-本项目实现思路受以下项目启发：
-bear4f/emby-proxy-toolbox
-
----
-
 ## 警告⚠️
-本代码基于原作者的代码，使用ai进行改写，本项目仅作为兴趣爱好，本人不对任何代码所负责！！
+
+本代码基于使用ai进行编写，本项目仅作为兴趣爱好，本人不对任何代码所负责！！
 
 ---
-
-## 一键安装
-
-
-```bash
-curl -fsSL -o install.sh https://raw.githubusercontent.com/admintors/emby-proxy-alpine-lite/main/install.sh && bash install.sh
-
