@@ -1,28 +1,10 @@
 #!/usr/bin/env bash
-# Emby Proxy Alpine Lite
-# 一个适用于 Alpine Linux / NAT VPS / 非标准端口环境的轻量级 Emby/Jellyfin 反代一键脚本。
-#
-# 功能：
-# - DNS 验证申请证书（acme.sh）
-# - 非标准 HTTPS 入口
-# - HTTPS 上游回源
-# - WebSocket / 长连接支持
-# - 面向低配小鸡优化
-#
-# 适用场景：
-# - Alpine Linux
-# - 无 80/443 端口
-# - NAT VPS / 高位端口映射
-# - 自用 Emby/Jellyfin 反代
-#
-# 注意：
-# - 客户端必须填写 https://域名:端口
-# - 使用 Cloudflare 橙云时建议使用 2053 等支持的 HTTPS 端口
-# - 如使用非 Cloudflare 支持端口，建议灰云（DNS only）
+# Emby Proxy Alpine Lite - Menu Edition
+# Alpine / NAT VPS / 非标准端口 / DNS 验证 / HTTPS 上游 / 多站点共存
 
 set -euo pipefail
 
-TOOL_NAME="emby-proxy-alpine-fresh"
+TOOL_NAME="emby-proxy-alpine-lite"
 NGINX_MAIN="/etc/nginx/nginx.conf"
 HTTP_D="/etc/nginx/http.d"
 CONF_PREFIX="emby-lite-"
@@ -42,10 +24,10 @@ prompt() {
   local default="${3:-}"
   local value=""
   if [ -n "$default" ]; then
-    read -r -p "$text [$default]: " value || true
+    read -r -p "$text [$default]: " value </dev/tty || true
     value="${value:-$default}"
   else
-    read -r -p "$text: " value || true
+    read -r -p "$text: " value </dev/tty || true
   fi
   printf -v "$var_name" '%s' "$value"
 }
@@ -57,7 +39,7 @@ yesno() {
   local ans=""
   local hint="y/N"
   [ "$default" = "y" ] && hint="Y/n"
-  read -r -p "$text [$hint]: " ans || true
+  read -r -p "$text [$hint]: " ans </dev/tty || true
   ans="${ans:-$default}"
   case "$ans" in
     y|Y|yes|YES) printf -v "$var_name" 'y' ;;
@@ -107,19 +89,6 @@ backup_nginx_conf() {
   [ -f "$NGINX_MAIN" ] && cp -f "$NGINX_MAIN" "${NGINX_MAIN}.bak.$(date +%s)" || true
 }
 
-clean_old_emby_conf() {
-  echo "==> 清理旧 emby-lite 配置..."
-  rm -f "${HTTP_D}/${CONF_PREFIX}"*.conf 2>/dev/null || true
-}
-
-clean_old_acme_if_needed() {
-  yesno RESET_ACME "是否清理旧 acme.sh 状态并全新签发证书（新机器建议选 y）" "y"
-  if [ "$RESET_ACME" = "y" ]; then
-    echo "==> 清理旧 acme.sh 状态..."
-    rm -rf "$ACME_HOME"
-  fi
-}
-
 install_or_init_acme_sh() {
   local acme_email="$1"
 
@@ -167,6 +136,21 @@ setup_dns_env() {
       echo "不支持的 DNS 提供商: $provider"
       exit 1
       ;;
+  esac
+}
+
+choose_dns_provider() {
+  echo "请选择 DNS 提供商："
+  echo "1) cloudflare"
+  echo "2) aliyun"
+  echo "3) dnspod"
+  read -r -p "输入序号: " DNS_CHOICE </dev/tty
+
+  case "$DNS_CHOICE" in
+    1) DNS_PROVIDER="cloudflare" ;;
+    2) DNS_PROVIDER="aliyun" ;;
+    3) DNS_PROVIDER="dnspod" ;;
+    *) echo "无效选择"; return 1 ;;
   esac
 }
 
@@ -246,6 +230,12 @@ http {
 EOF
 }
 
+conf_path_for_site() {
+  local domain="$1"
+  local port="$2"
+  echo "${HTTP_D}/${CONF_PREFIX}$(sanitize_name "$domain")-${port}.conf"
+}
+
 write_proxy_conf() {
   local domain="$1"
   local listen_port="$2"
@@ -256,7 +246,8 @@ write_proxy_conf() {
   local auth_pass="$7"
   local skip_verify="$8"
 
-  local conf_path="${HTTP_D}/${CONF_PREFIX}$(sanitize_name "$domain")-${listen_port}.conf"
+  local conf_path
+  conf_path="$(conf_path_for_site "$domain" "$listen_port")"
   local htpasswd_file="/etc/nginx/.htpasswd-emby-lite-${listen_port}"
   local cert_dir="${CERT_HOME}/${domain}"
 
@@ -279,6 +270,8 @@ EOF
   fi
 
   cat > "$conf_path" <<EOF
+# META domain=${domain} port=${listen_port} upstream=${upstream_host}:${upstream_port} basicauth=${enable_auth}
+
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     ''      close;
@@ -349,64 +342,86 @@ reload_nginx() {
   rc-service nginx reload >/dev/null 2>&1 || rc-service nginx restart >/dev/null 2>&1 || nginx -s reload
 }
 
-show_result() {
+site_exists() {
   local domain="$1"
   local port="$2"
+  local conf
+  conf="$(conf_path_for_site "$domain" "$port")"
+  [ -f "$conf" ]
+}
 
-  echo
-  echo "========================================"
-  echo "部署完成"
-  echo "最终地址: https://${domain}:${port}"
-  echo
-  echo "注意："
-  echo "1. 客户端必须填 HTTPS"
-  echo "2. 端口必须填 ${port}"
-  echo "3. 如使用 Cloudflare，建议先灰云（DNS only）"
-  echo "4. NAT 面板必须映射 公网${port} -> 本机${port}"
-  echo "========================================"
+list_sites() {
+  echo "=== 已有站点 ==="
+  local found=0
+  for f in "${HTTP_D}/${CONF_PREFIX}"*.conf; do
+    [ -e "$f" ] || continue
+    found=1
+    local meta domain port upstream
+    meta="$(grep -E '^# META ' "$f" | head -n1 || true)"
+    domain="$(echo "$meta" | sed -n 's/.*domain=\([^ ]*\).*/\1/p')"
+    port="$(echo "$meta" | sed -n 's/.*port=\([^ ]*\).*/\1/p')"
+    upstream="$(echo "$meta" | sed -n 's/.*upstream=\([^ ]*\).*/\1/p')"
+    echo "- 域名: ${domain:-未知} | 端口: ${port:-未知} | 上游: ${upstream:-未知}"
+    echo "  配置: $f"
+  done
+  [ "$found" -eq 1 ] || echo "（空）"
   echo
 }
 
-main() {
+init_system() {
   need_root
   ensure_deps
   ensure_dirs
   backup_nginx_conf
 
-  echo "=== ${TOOL_NAME} ==="
-  echo "适用：Alpine 新机器从零部署"
-  echo
-
   prompt ACME_EMAIL "请输入用于申请证书的合法邮箱"
-  is_valid_email "$ACME_EMAIL" || { echo "邮箱格式不合法"; exit 1; }
+  is_valid_email "$ACME_EMAIL" || { echo "邮箱格式不合法"; return 1; }
 
-  prompt DOMAIN "入口域名（必须已解析到本机公网IP）"
+  install_or_init_acme_sh "$ACME_EMAIL"
+  write_main_nginx_conf
+  test_nginx
+  enable_start_nginx
+  reload_nginx
+
+  echo "==> 初始化完成"
+  echo
+}
+
+add_site() {
+  need_root
+  ensure_deps
+  ensure_dirs
+
+  if [ ! -x "${ACME_HOME}/acme.sh" ]; then
+    echo "未检测到 acme.sh，请先执行「初始化系统环境」"
+    return 1
+  fi
+
+  if [ ! -f "$NGINX_MAIN" ]; then
+    echo "未检测到 nginx 主配置，请先执行「初始化系统环境」"
+    return 1
+  fi
+
+  prompt DOMAIN "请输入入口域名（必须已解析到本机公网IP）"
   DOMAIN="$(strip_scheme "$DOMAIN")"
-  [ -n "$DOMAIN" ] || { echo "域名不能为空"; exit 1; }
+  [ -n "$DOMAIN" ] || { echo "域名不能为空"; return 1; }
 
-  prompt LISTEN_PORT "本机 HTTPS 监听端口（例如 2053 / 52443，不能是 80/443/8080/8443）" "52443"
-  is_port "$LISTEN_PORT" || { echo "端口不合法"; exit 1; }
+  prompt LISTEN_PORT "请输入 HTTPS 监听端口（如 2053 / 52443）" "52443"
+  is_port "$LISTEN_PORT" || { echo "端口不合法"; return 1; }
 
-  prompt UPSTREAM_HOST "HTTPS 上游主机名或IP（不要带 https://）"
+  prompt UPSTREAM_HOST "请输入 HTTPS 上游主机名或IP（不要带 https://）"
   UPSTREAM_HOST="$(strip_scheme "$UPSTREAM_HOST")"
-  [ -n "$UPSTREAM_HOST" ] || { echo "上游主机不能为空"; exit 1; }
+  [ -n "$UPSTREAM_HOST" ] || { echo "上游主机不能为空"; return 1; }
 
-  prompt UPSTREAM_PORT "HTTPS 上游端口" "443"
-  is_port "$UPSTREAM_PORT" || { echo "上游端口不合法"; exit 1; }
+  prompt UPSTREAM_PORT "请输入 HTTPS 上游端口" "443"
+  is_port "$UPSTREAM_PORT" || { echo "上游端口不合法"; return 1; }
 
-  echo "请选择 DNS 提供商："
-  echo "1) cloudflare"
-  echo "2) aliyun"
-  echo "3) dnspod"
-  read -r -p "输入序号: " DNS_CHOICE
+  if site_exists "$DOMAIN" "$LISTEN_PORT"; then
+    yesno OVERWRITE "检测到相同 域名+端口 配置已存在，是否覆盖" "n"
+    [ "$OVERWRITE" = "y" ] || { echo "已取消"; return 0; }
+  fi
 
-  case "$DNS_CHOICE" in
-    1) DNS_PROVIDER="cloudflare" ;;
-    2) DNS_PROVIDER="aliyun" ;;
-    3) DNS_PROVIDER="dnspod" ;;
-    *) echo "无效选择"; exit 1 ;;
-  esac
-
+  choose_dns_provider || return 1
   setup_dns_env "$DNS_PROVIDER"
 
   yesno ENABLE_AUTH "是否启用 BasicAuth 额外门禁" "n"
@@ -415,21 +430,16 @@ main() {
   if [ "$ENABLE_AUTH" = "y" ]; then
     prompt AUTH_USER "BasicAuth 用户名" "emby"
     prompt AUTH_PASS "BasicAuth 密码"
-    [ -n "$AUTH_PASS" ] || { echo "密码不能为空"; exit 1; }
+    [ -n "$AUTH_PASS" ] || { echo "密码不能为空"; return 1; }
   fi
 
   yesno SKIP_VERIFY "如上游 HTTPS 证书异常/自签，是否跳过验证" "y"
 
-  clean_old_emby_conf
-  clean_old_acme_if_needed
-  install_or_init_acme_sh "$ACME_EMAIL"
   issue_cert "$DOMAIN" "$DNS_PROVIDER"
   install_cert "$DOMAIN"
-  write_main_nginx_conf
   conf_path="$(write_proxy_conf "$DOMAIN" "$LISTEN_PORT" "$UPSTREAM_HOST" "$UPSTREAM_PORT" "$ENABLE_AUTH" "$AUTH_USER" "$AUTH_PASS" "$SKIP_VERIFY")"
 
   echo "==> 已写入配置: $conf_path"
-
   test_nginx
   enable_start_nginx
   reload_nginx
@@ -437,7 +447,104 @@ main() {
   echo "==> 当前监听端口："
   ss -lntp | grep -E ":${LISTEN_PORT}\b" || true
 
-  show_result "$DOMAIN" "$LISTEN_PORT"
+  echo
+  echo "新增完成，访问地址："
+  echo "https://${DOMAIN}:${LISTEN_PORT}"
+  echo
 }
 
-main "$@"
+remove_site() {
+  need_root
+
+  list_sites
+  prompt DOMAIN "请输入要删除的域名"
+  DOMAIN="$(strip_scheme "$DOMAIN")"
+  [ -n "$DOMAIN" ] || { echo "域名不能为空"; return 1; }
+
+  prompt LISTEN_PORT "请输入该域名对应的监听端口"
+  is_port "$LISTEN_PORT" || { echo "端口不合法"; return 1; }
+
+  local conf
+  conf="$(conf_path_for_site "$DOMAIN" "$LISTEN_PORT")"
+
+  if [ ! -f "$conf" ]; then
+    echo "未找到配置文件：$conf"
+    return 1
+  fi
+
+  yesno CONFIRM_REMOVE "确认删除该站点配置" "n"
+  [ "$CONFIRM_REMOVE" = "y" ] || { echo "已取消"; return 0; }
+
+  rm -f "$conf"
+  rm -f "/etc/nginx/.htpasswd-emby-lite-${LISTEN_PORT}" 2>/dev/null || true
+
+  yesno REMOVE_CERT "是否同时删除该域名证书目录 ${CERT_HOME}/${DOMAIN}" "n"
+  if [ "$REMOVE_CERT" = "y" ]; then
+    rm -rf "${CERT_HOME}/${DOMAIN}"
+  fi
+
+  test_nginx
+  reload_nginx
+  echo "==> 删除完成"
+  echo
+}
+
+uninstall_all() {
+  need_root
+  yesno CONFIRM "确认卸载本项目所有站点与证书" "n"
+  [ "$CONFIRM" = "y" ] || { echo "已取消"; return 0; }
+
+  rm -f "${HTTP_D}/${CONF_PREFIX}"*.conf 2>/dev/null || true
+  rm -f /etc/nginx/.htpasswd-emby-lite-* 2>/dev/null || true
+  rm -rf "$CERT_HOME"/*
+  rm -rf "$ACME_HOME"
+
+  if ls /etc/nginx/nginx.conf.bak.* >/dev/null 2>&1; then
+    latest_bak="$(ls -1t /etc/nginx/nginx.conf.bak.* | head -n1)"
+    yesno RESTORE_MAIN "检测到 nginx.conf 备份，是否恢复最近一次备份" "y"
+    if [ "$RESTORE_MAIN" = "y" ]; then
+      cp -f "$latest_bak" /etc/nginx/nginx.conf
+    fi
+  fi
+
+  if nginx -t >/dev/null 2>&1; then
+    reload_nginx
+  else
+    rc-service nginx stop >/dev/null 2>&1 || true
+  fi
+
+  yesno REMOVE_NGINX "是否卸载 nginx 软件包（仅当本机不再需要 nginx 时选择 y）" "n"
+  if [ "$REMOVE_NGINX" = "y" ]; then
+    rc-service nginx stop >/dev/null 2>&1 || true
+    rc-update del nginx default >/dev/null 2>&1 || true
+    apk del nginx >/dev/null 2>&1 || true
+  fi
+
+  echo "==> 卸载完成"
+  echo
+}
+
+main_menu() {
+  need_root
+  while true; do
+    echo "=== ${TOOL_NAME} ==="
+    echo "1) 初始化系统环境"
+    echo "2) 新增反代站点"
+    echo "3) 删除反代站点"
+    echo "4) 查看已有站点"
+    echo "5) 卸载本项目"
+    echo "0) 退出"
+    read -r -p "请选择: " CHOICE </dev/tty
+    case "$CHOICE" in
+      1) init_system ;;
+      2) add_site ;;
+      3) remove_site ;;
+      4) list_sites ;;
+      5) uninstall_all ;;
+      0) exit 0 ;;
+      *) echo "无效选择"; echo ;;
+    esac
+  done
+}
+
+main_menu "$@"
