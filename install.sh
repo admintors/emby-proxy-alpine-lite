@@ -1195,6 +1195,64 @@ edit_site() {
   echo
 }
 
+remove_site() {
+  need_root
+  choose_site_conf_dir
+
+  list_sites
+  collect_site_records
+  [ "$SITE_RECORD_COUNT" -gt 0 ] || { echo "当前没有可删除站点"; return 0; }
+
+  while true; do
+    read -r -p "请输入要删除的站点编号: " SITE_INDEX </dev/tty || true
+    case "$SITE_INDEX" in
+      ''|*[!0-9]*) echo "请输入数字编号" ;;
+      *)
+        if [ "$SITE_INDEX" -ge 1 ] && [ "$SITE_INDEX" -le "$SITE_RECORD_COUNT" ]; then
+          break
+        fi
+        echo "编号超出范围"
+        ;;
+    esac
+  done
+
+  local record conf domain port auth_path same_domain_left=0 i rec f d p m s
+  record="${SITE_RECORDS[$((SITE_INDEX-1))]}"
+  IFS='|' read -r conf domain port _mode _summary <<< "$record"
+  auth_path="$(htpasswd_path_for_site "$domain" "$port")"
+
+  yesno CONFIRM_REMOVE "确认删除站点 ${domain}:${port}" "n"
+  [ "$CONFIRM_REMOVE" = "y" ] || { echo "已取消"; return 0; }
+
+  rm -f "$conf"
+  rm -f "$auth_path" 2>/dev/null || true
+
+  collect_site_records
+  for ((i=0; i<SITE_RECORD_COUNT; i++)); do
+    rec="${SITE_RECORDS[$i]}"
+    IFS='|' read -r f d p m s <<< "$rec"
+    if [ "$d" = "$domain" ]; then
+      same_domain_left=1
+      break
+    fi
+  done
+
+  if [ "$same_domain_left" -eq 0 ]; then
+    rm -rf "${CERT_HOME}/${domain}"
+    if [ -x "${ACME_HOME}/acme.sh" ]; then
+      "${ACME_HOME}/acme.sh" --remove -d "$domain" --ecc >/dev/null 2>&1 || true
+    fi
+    echo "==> 已删除该站点对应证书目录，并移除 acme 续签记录: ${domain}"
+  else
+    echo "==> 检测到同域名还有其他站点在使用，已保留证书: ${domain}"
+  fi
+
+  test_nginx
+  reload_nginx
+  echo "==> 删除完成"
+  echo
+}
+
 uninstall_all() {
   need_root
   yesno CONFIRM "确认卸载本项目所有站点与证书" "n"
