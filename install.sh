@@ -285,18 +285,22 @@ choose_dns_provider() {
 issue_cert() {
   local domain="$1"
   local provider="$2"
+  local force_issue="${3:-n}"
+  local force_flag=""
+
+  [ "$force_issue" = "y" ] && force_flag="--force"
 
   echo "==> 申请证书: ${domain}"
 
   case "$provider" in
     cloudflare)
-      "${ACME_HOME}/acme.sh" --issue --dns dns_cf -d "$domain" --keylength ec-256
+      "${ACME_HOME}/acme.sh" --issue --dns dns_cf -d "$domain" --keylength ec-256 $force_flag
       ;;
     aliyun)
-      "${ACME_HOME}/acme.sh" --issue --dns dns_ali -d "$domain" --keylength ec-256
+      "${ACME_HOME}/acme.sh" --issue --dns dns_ali -d "$domain" --keylength ec-256 $force_flag
       ;;
     dnspod)
-      "${ACME_HOME}/acme.sh" --issue --dns dns_dp -d "$domain" --keylength ec-256
+      "${ACME_HOME}/acme.sh" --issue --dns dns_dp -d "$domain" --keylength ec-256 $force_flag
       ;;
     *)
       echo "不支持的 DNS 提供商: $provider"
@@ -967,8 +971,12 @@ add_site() {
     media_only_split) collect_media_only_split_params || return 1 ;;
   esac
 
-  issue_cert "$DOMAIN" "$DNS_PROVIDER"
-  install_cert "$DOMAIN"
+  if [ -f "${CERT_HOME}/${DOMAIN}/fullchain.cer" ] && [ -f "${CERT_HOME}/${DOMAIN}/private.key" ]; then
+    echo "==> 检测到域名 ${DOMAIN} 已有证书，直接复用"
+  else
+    issue_cert "$DOMAIN" "$DNS_PROVIDER"
+    install_cert "$DOMAIN"
+  fi
   conf_path="$(write_proxy_conf_by_mode)"
 
   echo "==> 已写入配置: $conf_path"
@@ -1071,7 +1079,7 @@ reissue_site_cert() {
   choose_dns_provider || return 1
   setup_dns_env "$DNS_PROVIDER"
 
-  issue_cert "$domain" "$DNS_PROVIDER"
+  issue_cert "$domain" "$DNS_PROVIDER" "y"
   install_cert "$domain"
   test_nginx
   reload_nginx
