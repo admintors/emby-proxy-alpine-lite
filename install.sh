@@ -201,6 +201,16 @@ ensure_dirs() {
   choose_nginx_user
 }
 
+acme_domain_exists() {
+  local domain="$1"
+  [ -d "${ACME_HOME}/${domain}_ecc" ] || [ -d "${ACME_HOME}/${domain}" ]
+}
+
+installed_cert_exists() {
+  local domain="$1"
+  [ -f "${CERT_HOME}/${domain}/fullchain.cer" ] && [ -f "${CERT_HOME}/${domain}/private.key" ]
+}
+
 install_shortcut() {
   local target_script
   target_script="$(readlink -f "$0" 2>/dev/null || echo "$0")"
@@ -971,8 +981,11 @@ add_site() {
     media_only_split) collect_media_only_split_params || return 1 ;;
   esac
 
-  if [ -f "${CERT_HOME}/${DOMAIN}/fullchain.cer" ] && [ -f "${CERT_HOME}/${DOMAIN}/private.key" ]; then
-    echo "==> 检测到域名 ${DOMAIN} 已有证书，直接复用"
+  if installed_cert_exists "$DOMAIN"; then
+    echo "==> 检测到域名 ${DOMAIN} 已安装证书，直接复用"
+  elif acme_domain_exists "$DOMAIN"; then
+    echo "==> 检测到域名 ${DOMAIN} 在 acme.sh 中已有签发记录，直接重新安装已有证书"
+    install_cert "$DOMAIN"
   else
     issue_cert "$DOMAIN" "$DNS_PROVIDER"
     install_cert "$DOMAIN"
