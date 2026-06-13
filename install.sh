@@ -430,16 +430,27 @@ ${ssl_verify_block}
 EOF
 }
 
+render_proxy_stream_extra_block() {
+  cat <<'EOF'
+        proxy_max_temp_file_size 0;
+        proxy_force_ranges on;
+        add_header X-Accel-Buffering "no" always;
+        gzip off;
+EOF
+}
+
 choose_proxy_mode() {
   echo "请选择反代模式："
   echo "1) 标准全站反代"
   echo "2) 前后端分离反代（前端/API 与媒体流分离）"
   echo "3) 播放流分流反代（默认走主站，播放相关路径走媒体上游）"
+  echo "4) 流式传输优化模式"
   read -r -p "输入序号: " MODE_CHOICE </dev/tty
   case "$MODE_CHOICE" in
     1) PROXY_MODE="standard" ;;
     2) PROXY_MODE="split_front_media" ;;
     3) PROXY_MODE="media_only_split" ;;
+    4) PROXY_MODE="stream_http" ;;
     *) echo "无效选择"; return 1 ;;
   esac
 }
@@ -720,6 +731,48 @@ EOF
   echo "$conf_path"
 }
 
+write_proxy_conf_stream() {
+  local domain="$1" listen_port="$2" enable_auth="$3" auth_user="$4" auth_pass="$5"
+  local upstream_scheme="$6" upstream_host="$7" upstream_port="$8" skip_verify="$9"
+  local host_mode="${10}" host_custom="${11}"
+  local conf_path auth_path ssl_verify_block host_header_line common_block stream_extra_block summary
+
+  conf_path="$(conf_path_for_site "$domain" "$listen_port")"
+  auth_path="$(htpasswd_path_for_site "$domain" "$listen_port")"
+  ssl_verify_block="$(proxy_ssl_verify_block "$skip_verify")"
+  host_header_line="$(render_host_header_line "$host_mode" "$upstream_host" "$host_custom")"
+  common_block="$(render_proxy_common_block "$ssl_verify_block")"
+  stream_extra_block="$(render_proxy_stream_extra_block)"
+  summary="${upstream_scheme}://${upstream_host}:${upstream_port}"
+
+  [ "$enable_auth" = "y" ] && htpasswd -bc "$auth_path" "$auth_user" "$auth_pass" >/dev/null || rm -f "$auth_path" 2>/dev/null || true
+
+  cat > "$conf_path" <<EOF
+# META domain=${domain}
+# META port=${listen_port}
+# META mode=stream_http
+# META summary=${summary}
+# META upstream_main=${summary}
+server {
+    listen ${listen_port} ssl http2;
+    server_name ${domain};
+
+    ssl_certificate     ${CERT_HOME}/${domain}/fullchain.cer;
+    ssl_certificate_key ${CERT_HOME}/${domain}/private.key;
+
+$(render_auth_block "$enable_auth" "$auth_path")
+
+    location / {
+        proxy_pass ${upstream_scheme}://${upstream_host}:${upstream_port};
+        ${host_header_line}
+${common_block}
+${stream_extra_block}
+    }
+}
+EOF
+  echo "$conf_path"
+}
+
 write_proxy_conf_split_front_media() {
   local domain="$1" listen_port="$2" enable_auth="$3" auth_user="$4" auth_pass="$5"
   local front_scheme="$6" front_host="$7" front_port="$8" front_skip_verify="$9" front_host_mode="${10}" front_host_custom="${11}"
@@ -830,6 +883,10 @@ write_proxy_conf_by_mode() {
       write_proxy_conf_standard "$DOMAIN" "$LISTEN_PORT" "$ENABLE_AUTH" "$AUTH_USER" "$AUTH_PASS" \
         "$UPSTREAM_SCHEME" "$UPSTREAM_HOST" "$UPSTREAM_PORT" "$SKIP_VERIFY" "$MAIN_HOST_MODE" "$MAIN_HOST_CUSTOM"
       ;;
+    stream_http)
+      write_proxy_conf_stream "$DOMAIN" "$LISTEN_PORT" "$ENABLE_AUTH" "$AUTH_USER" "$AUTH_PASS" \
+        "$UPSTREAM_SCHEME" "$UPSTREAM_HOST" "$UPSTREAM_PORT" "$SKIP_VERIFY" "$MAIN_HOST_MODE" "$MAIN_HOST_CUSTOM"
+      ;;
     split_front_media)
       write_proxy_conf_split_front_media "$DOMAIN" "$LISTEN_PORT" "$ENABLE_AUTH" "$AUTH_USER" "$AUTH_PASS" \
         "$FRONT_SCHEME" "$FRONT_HOST" "$FRONT_PORT" "$FRONT_SKIP_VERIFY" "$FRONT_HOST_MODE" "$FRONT_HOST_CUSTOM" \
@@ -890,7 +947,7 @@ add_site() {
   collect_common_site_params || return 1
 
   case "$PROXY_MODE" in
-    standard) collect_standard_params || return 1 ;;
+    standard|stream_http) collect_standard_params || return 1 ;;
     split_front_media) collect_split_front_media_params || return 1 ;;
     media_only_split) collect_media_only_split_params || return 1 ;;
   esac
@@ -1073,7 +1130,7 @@ edit_site() {
   fi
 
   case "$PROXY_MODE" in
-    standard)
+    standard|stream_http)
       old_upstream_main="$(site_meta_value "$conf" upstream_main)"
       UPSTREAM_SCHEME="$(url_scheme_from_meta "$old_upstream_main")"
       UPSTREAM_HOST="$(url_host_from_meta "$old_upstream_main")"
@@ -1081,7 +1138,7 @@ edit_site() {
       SKIP_VERIFY="$(grep -q 'proxy_ssl_verify off;' "$conf" && echo y || echo n)"
       MAIN_HOST_MODE="upstream"
       MAIN_HOST_CUSTOM=""
-      echo "== 编辑标准模式上游 =="
+      echo "== 编辑标准/流式传输优化模式上游 =="
       choose_upstream_scheme UPSTREAM_SCHEME "请选择上游协议（当前 ${UPSTREAM_SCHEME:-https}）：" || return 1
       prompt UPSTREAM_HOST "请输入上游主机名或IP" "$UPSTREAM_HOST"
       UPSTREAM_HOST="$(strip_scheme "$UPSTREAM_HOST")"
