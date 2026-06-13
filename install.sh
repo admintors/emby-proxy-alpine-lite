@@ -5,6 +5,7 @@
 set -euo pipefail
 
 TOOL_NAME="emby-proxy-alpine-lite"
+SHORTCUT_BIN="/usr/local/bin/emby"
 NGINX_MAIN="/etc/nginx/nginx.conf"
 CONF_PREFIX="emby-lite-"
 ACME_HOME="/root/.acme.sh"
@@ -198,6 +199,18 @@ ensure_dirs() {
   mkdir -p "$CERT_HOME"
   choose_site_conf_dir
   choose_nginx_user
+}
+
+install_shortcut() {
+  local target_script
+  target_script="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+  mkdir -p "$(dirname "$SHORTCUT_BIN")"
+  cat > "$SHORTCUT_BIN" <<EOF
+#!/usr/bin/env bash
+exec bash "$target_script" "\$@"
+EOF
+  chmod +x "$SHORTCUT_BIN"
 }
 
 backup_nginx_conf() {
@@ -913,6 +926,7 @@ init_system() {
   need_root
   ensure_deps
   ensure_dirs
+  install_shortcut
   backup_nginx_conf
 
   prompt ACME_EMAIL "请输入用于申请证书的合法邮箱"
@@ -925,6 +939,7 @@ init_system() {
   reload_nginx
 
   echo "==> 初始化完成"
+  echo "==> 菜单快捷指令已安装：emby"
   echo
 }
 
